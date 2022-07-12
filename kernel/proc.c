@@ -290,6 +290,8 @@ fork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+  
+  np->mask=p->mask;//Child's trace_mask=Parent's trace_mask
 
   pid = np->pid;
 
@@ -693,3 +695,15 @@ procdump(void)
     printf("\n");
   }
 }
+
+uint64
+count_process(void){
+  uint64 cnt=0;
+  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+    if(p->state != UNUSED){
+      cnt++;
+    }
+  }
+  return cnt;
+}
+

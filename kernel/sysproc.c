@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -95,3 +96,35 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64 sys_trace(void){
+  int n;
+  if(argint(0,&n)<0){
+    return -1;
+  }
+  myproc()->mask=n;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  //从用户态读入一个指针，作为存放sysinfo的buffer
+  uint64 addr;
+  if(argaddr(0,&addr) < 0){
+    return -1;
+  }
+  //定义一个sysinfo结构的变量sinfo，记录系统调用的信息
+  struct sysinfo sinfo;
+  sinfo.freemem = count_free_mem();//计算空闲内存字节数
+  sinfo.nproc = count_process();//计算正在运行的线程数
+
+  //就是复制sinfo的内容到用户态传来的地址
+  // 使用copyout，结合当前进程的页表，获得进程传进来的指针（逻辑地址）对应的物理地址
+  // 然后将 $sinfo 中的数据复制到该指针所指向的位置，供用户进程使用
+  if(copyout(myproc()->pagetable, addr, (char*)&sinfo,sizeof(sinfo)) < 0){
+    return -1;
+  }
+  return 0;
+}
+
