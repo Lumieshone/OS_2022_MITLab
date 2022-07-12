@@ -67,7 +67,27 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+   else if(r_scause() == 13 || r_scause() == 15){//检查一个错误是否是页面错误
+    uint64 va = r_stval();//r_stval()返回RISC-V stval寄存器，其中包含导致页面错误的虚拟地址
+    if(p->sz <= va){//地址高于sbrk申请的地址
+        p->killed = 1;
+    } else if(va < p->trapframe->sp){//地址低于栈顶地址 无效页
+        p->killed = 1;
+    } else{
+      va = PGROUNDDOWN(va);//使用PGROUNDDOWN(va)将故障虚拟地址舍入到页面边界
+      char *mem = kalloc();//参考vm.c的uvmalloc()，调用kalloc()和mapages()。
+      if(mem == 0){//如果kalloc()在页面错误处理程序中失败，终止当前进程
+        p->killed = 1;
+      } else{
+        memset(mem, 0, PGSIZE);
+        if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+            kfree(mem);
+            p->killed = 1;
+        }
+      }
+    }
+   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
