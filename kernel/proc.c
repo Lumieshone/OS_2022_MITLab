@@ -19,6 +19,7 @@ extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
+extern char etext[]; 
 extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
@@ -34,14 +35,16 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
+      /*
       char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
+      */
   }
-  kvminithart();
+  //kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -120,7 +123,20 @@ found:
     release(&p->lock);
     return 0;
   }
-
+  
+   p->kernel_pagetable = kvminit0();
+   if(p->kernel_pagetable == 0){
+     freeproc(p);
+     release(&p->lock);
+     return 0;
+   }
+ 
+   char *pa = kalloc();
+   if(pa == 0)
+     panic("kalloc");
+   uint64 va = KSTACK((int) (p - proc));
+   uvmmap(p->kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+   p->kstack = va;
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -128,6 +144,35 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+}
+
+void
+proc_kernel_freepagetable(pagetable_t pagetable, uint64 kstack, uint64 sz)
+{
+  // uart registers
+  uvmunmap(pagetable, UART0, 1, 0);
+
+  // virtio mmio disk interface
+  uvmunmap(pagetable, VIRTIO0, 1, 0);
+
+  // CLINT
+  //uvmunmap(pagetable, CLINT, 0x10000/PGSIZE, 0);
+
+  // PLIC
+  uvmunmap(pagetable, PLIC, 0x400000/PGSIZE, 0);
+
+  // map kernel text executable and read-only.
+  uvmunmap(pagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE, 0);
+
+  // map kernel data and the physical RAM we'll make use of.
+  uvmunmap(pagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
+
+
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+
+  uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0);
+ // uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmfree0(pagetable, kstack, 1);
 }
 
 // free a proc structure and the data hanging from it,
@@ -141,7 +186,10 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kernel_pagetable)
+    proc_kernel_freepagetable(p->kernel_pagetable, p->kstack, p->sz);
   p->pagetable = 0;
+  p->kernel_pagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -212,7 +260,7 @@ void
 userinit(void)
 {
   struct proc *p;
-
+  pte_t *pte, *kernel_pte;
   p = allocproc();
   initproc = p;
   
@@ -221,6 +269,11 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  for (int j = 0; j < p->sz; j += PGSIZE) {
+    pte =  walk(p->pagetable, j, 0); // 遍历p的页表，得到pte
+    kernel_pte = walk(p->kernel_pagetable, j, 1); // 遍历kernel页表，如果没有该页，则分配一页
+    *kernel_pte = (*pte) & ~PTE_U; // 内核必须设置~PTE_U, 不然内核无法使用
+  }
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -261,7 +314,7 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
-
+  pte_t *pte, *kernel_pte;
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
@@ -272,6 +325,12 @@ fork(void)
     freeproc(np);
     release(&np->lock);
     return -1;
+  }
+  
+  for (int j = 0; j < p->sz; j += PGSIZE) {
+    pte =  walk(np->pagetable, j, 0);
+    kernel_pte = walk(np->kernel_pagetable, j, 1);
+    *kernel_pte = (*pte) & ~PTE_U;
   }
   np->sz = p->sz;
 
@@ -473,8 +532,11 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
+        w_satp(MAKE_SATP(p->kernel_pagetable));
+        sfence_vma();
 
+        swtch(&c->context, &p->context);
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
