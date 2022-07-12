@@ -117,6 +117,7 @@ printf(char *fmt, ...)
 void
 panic(char *s)
 {
+  backtrace();
   pr.locking = 0;
   printf("panic: ");
   printf(s);
@@ -132,3 +133,18 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void
+backtrace(void) {
+  printf("backtrace:\n");
+  // 读取当前帧指针
+  uint64 fp = r_fp();
+  while (fp != PGROUNDUP(fp)) {
+    // xv6中，用一个页来存储栈，如果fp已经达到了栈页的上届，说明已经达到栈底
+    // 地址扩张是向低地址扩展，所以当fp到达最高地址时说明到达栈底
+    uint64 ra = *(uint64*)(fp - 8); // return address
+    printf("%p\n", ra);
+    fp = *(uint64*)(fp - 16); // preivous fp
+  }
+}
+

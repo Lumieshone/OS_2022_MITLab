@@ -67,6 +67,23 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    if (which_dev == 2) {
+        // 当which_dev为2时，表示每个CPU时间触发的中断
+      if (p->interval != 0) { // 设定了时钟条件
+        if (p->ticks == p->interval && p->alarm_goingoff == 0) {
+          // 达到计时次数后
+          // 此时处于内核中断
+          p->ticks = 0;
+          // A程序进入内核时，会将pc的值存到spec中，离开内核时再从spec中读取该值，返回A中代码执行的地方
+          // 此时修改spec寄存器的值为目标函数，就能够在离开中断时返回到我们想要的地方
+          // 但在次之前要保存当前进程的寄存器值，保证在推出目标handler时能够回到A程序正确的位置中
+          *(p->alarm_trapframe) = *(p->trapframe);
+          p->trapframe->epc = (uint64)p->handler;
+          p->alarm_goingoff = 1; // 不允许递归触发handler
+        }
+        p->ticks++; // cpu每产生一次timer中断计数++
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -216,5 +233,22 @@ devintr()
   } else {
     return 0;
   }
+}
+
+int sigalarm(int ticks, void(*handler)()) {
+    // 初始化alarm时设置该进程的计数大小以及对于alarm函数
+  struct proc *p = myproc();
+  p->interval = ticks;
+  p->handler = handler;
+  p->ticks = 0;
+  return 0; 
+}
+int sigreturn() {
+    // alarm返回时将备份的trapframe寄存器恢复，确保回退时cpu状态和进入中断时一致，对被中断函数透明
+  struct proc *p = myproc();
+  *(p->trapframe) = *(p->alarm_trapframe);
+    // 清除进入alarm标志位，确保能再次进入
+  p->alarm_goingoff = 0;
+  return 0;
 }
 
